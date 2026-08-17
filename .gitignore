@@ -1,0 +1,7 @@
+node_modules/
+.env
+bot/downloads/*
+!bot/downloads/.gitkeep
+bot/bin/
+dist/
+bot/file-cache.json

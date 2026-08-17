@@ -1,0 +1,26 @@
+{
+  "name": "telegram-video-music-bot",
+  "version": "1.0.0",
+  "description": "Instagram/YouTube video yuklab beruvchi va fonidagi musiqani (Shazam kabi) topib beruvchi Telegram bot",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "setup": "node scripts/get-ytdlp.js && node scripts/get-ffmpeg.js",
+    "setup:ytdlp": "node scripts/get-ytdlp.js",
+    "setup:ffmpeg": "node scripts/get-ffmpeg.js",
+    "update": "node scripts/get-ytdlp.js --force",
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "api": "node src/api.js",
+    "check": "node scripts/check.js"
+  },
+  "dependencies": {
+    "telegraf": "^4.16.3",
+    "dotenv": "^16.4.5",
+    "axios": "^1.7.7",
+    "express": "^4.21.0",
+    "cors": "^2.8.5",
+    "form-data": "^4.0.0",
+    "multer": "^2.0.1"
+  }
+}
