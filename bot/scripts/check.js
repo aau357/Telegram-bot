@@ -41,6 +41,20 @@ console.log(
   }`
 );
 
+const cookieFile = process.env.INSTAGRAM_COOKIES_FILE;
+const cookieBrowser = process.env.COOKIES_FROM_BROWSER;
+const fsMod = await import("fs");
+
+if (cookieFile && fsMod.existsSync(cookieFile)) {
+  console.log(`\u2714 Instagram cookie  fayl: ${cookieFile}`);
+} else if (cookieBrowser) {
+  console.log(`\u2714 Instagram cookie  brauzer: ${cookieBrowser}`);
+} else {
+  console.log(
+    "\u2716 Instagram cookie  sozlanmagan \u2014 story va yopiq postlar ishlamaydi"
+  );
+}
+
 if (!ffmpeg.ok) {
   console.log(
     "\nffmpeg topilmasa, videolar ovozsiz kelishi mumkin.\n" +

@@ -8,6 +8,7 @@ import {
   isUrl,
   isInstagramUrl,
   isYoutubeUrl,
+  hasCookiesConfigured,
   downloadVideo,
   downloadMedia,
   downloadAudioClip,
@@ -16,11 +17,12 @@ import {
   extractAudioFromVideo,
   searchAndDownloadAudio,
   cleanupFile,
+  sweepOldDownloads,
   DOWNLOADS_DIR,
 } from "./downloader.js";
 import { recognizeAudio, findSongByText } from "./recognizer.js";
 import { getCachedFileId, setCachedFileId, cacheSize } from "./filecache.js";
-import { checkYtdlp, checkFfmpeg } from "./ytdlp.js";
+import { checkYtdlp, checkFfmpeg, getVideoMetadata } from "./ytdlp.js";
 import { toUserMessage, notifyAdmin } from "./errors.js";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -34,6 +36,24 @@ const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 const CACHE_TTL_MS = 20 * 60 * 1000; // 20 daqiqa
 
 const bot = new Telegraf(BOT_TOKEN);
+
+// MUHIM: Telegraf'da bot.catch() sozlanmasa, handler ichida ushlanmagan
+// xato (masalan Telegram tarmog'ida vaqtinchalik uzilish) butun Node
+// jarayonini qulatib yuboradi. Shuning uchun bu yerda ushlab, faqat
+// konsolga yozamiz — bot ishlashda davom etadi.
+bot.catch((err, ctx) => {
+  console.error(`[telegraf xato] ${ctx.updateType}:`, err?.message || err);
+  notifyAdmin(ctx.telegram, err, `telegraf: ${ctx.updateType}`);
+});
+
+// Qo'shimcha ehtiyot chorasi: Telegraf tashqarisida sodir bo'lgan
+// kutilmagan xatolar ham botni to'xtatib qo'ymasin.
+process.on("unhandledRejection", (err) => {
+  console.error("[ushlanmagan promise xatosi]", err?.message || err);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[ushlanmagan xato]", err?.message || err);
+});
 
 // ---------------------------------------------------------------------------
 // Vaqtinchalik xotira: yuklangan fayllar va topilgan qo'shiqlar
@@ -85,6 +105,10 @@ setInterval(() => {
   for (const [key, value] of searchCache) {
     if (now - value.createdAt > CACHE_TTL_MS) searchCache.delete(key);
   }
+
+  // Diskdagi eskirgan fayllarni ham tozalaymiz — bot qayta ishga tushganda
+  // yoki yuklash yarim yo'lda uzilib qolganda mediaCache buni bilmaydi.
+  sweepOldDownloads(CACHE_TTL_MS);
 }, 5 * 60 * 1000);
 
 // ---------------------------------------------------------------------------
@@ -315,11 +339,16 @@ async function handleLink(ctx, url) {
 
     // --- Bir nechta fayl (karusel) → albom qilib yuboramiz ---
     if (items.length > 1) {
-      const media = items.slice(0, 10).map((item, index) => ({
-        type: item.type === "video" ? "video" : "photo",
-        media: { source: item.path },
-        ...(index === 0 ? { caption } : {}),
-      }));
+      // width/height bermasak, Telegram nisbatni o'zi taxmin qiladi —
+      // tik (portrait) videolar albomda cho'zilib noto'g'ri ko'rinadi.
+      const media = await Promise.all(
+        items.slice(0, 10).map(async (item, index) => ({
+          type: item.type === "video" ? "video" : "photo",
+          media: { source: item.path },
+          ...(item.type === "video" ? await getVideoMetadata(item.path) : {}),
+          ...(index === 0 ? { caption } : {}),
+        }))
+      );
       await ctx.replyWithMediaGroup(media);
       return;
     }
@@ -334,10 +363,15 @@ async function handleLink(ctx, url) {
       return;
     }
 
+    // width/height/duration bermasak, Telegram nisbatni o'zi taxmin qiladi —
+    // buning natijasida tik (portrait) videolar cho'zilib noto'g'ri ko'rinadi.
+    const meta = await getVideoMetadata(single.path);
+
     const key = cacheMedia(single.path);
     const sent = await ctx.replyWithVideo(
       { source: single.path },
       {
+        ...meta,
         caption,
         supports_streaming: true,
         ...Markup.inlineKeyboard([
@@ -595,6 +629,9 @@ bot.on("video_note", (ctx) =>
 // Ishga tushirishdan oldin muhitni tekshirish
 // ---------------------------------------------------------------------------
 async function preflight() {
+  // Oldingi ishga tushganda diskda qolib ketgan eski fayllarni tozalaymiz
+  sweepOldDownloads(CACHE_TTL_MS);
+
   const ytdlp = await checkYtdlp();
   if (ytdlp.ok) {
     console.log(`✔ yt-dlp topildi (${ytdlp.version})`);
@@ -612,6 +649,12 @@ async function preflight() {
   if (!process.env.AUDD_API_TOKEN) {
     console.warn("⚠ AUDD_API_TOKEN sozlanmagan — musiqani tanish ishlamaydi.");
   }
+
+  console.log(
+    hasCookiesConfigured()
+      ? "✔ Instagram cookie sozlangan (story va yopiq postlar ishlaydi)"
+      : "ℹ Instagram cookie sozlanmagan — story va yopiq postlar ishlamaydi"
+  );
 
   if (cacheSize() > 0) {
     console.log(`✔ Keshda ${cacheSize()} ta tayyor video bor`);

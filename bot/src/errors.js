@@ -17,6 +17,12 @@ const RULES = [
       "⚠️ Botda vaqtinchalik texnik nosozlik. Iltimos, birozdan keyin urinib ko'ring.",
   },
   {
+    // Story yoki yopiq post — bot hisobga kirmagan
+    test: /login required|You need to log in|requested content is not available.*login|--cookies/i,
+    message:
+      "🔒 Bu kontent faqat Instagram'ga kirgan foydalanuvchilarga ko'rinadi.\nStory va yopiq postlar uchun bot sozlanishi kerak.",
+  },
+  {
     // Yopiq / o'chirilgan Instagram postlari
     test: /login required|private|not available|rate-limit reached|empty media response|requested content is not available/i,
     message:

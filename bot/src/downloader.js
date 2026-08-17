@@ -6,6 +6,7 @@ import {
   runYtdlp,
   runYtdlpProgress,
   aria2cArgs,
+  soundcloudProxyArgs,
   runFfmpeg,
   ffmpegLocationArgs,
   hasAudioStream,
@@ -44,6 +45,54 @@ function isInstagramUrl(text) {
 
 function isYoutubeUrl(text) {
   return /(youtube\.com|youtu\.be)/i.test(text);
+}
+
+function isInstagramStoryUrl(text) {
+  return /instagram\.com\/(stories|s)\//i.test(text);
+}
+
+function isSoundcloudUrl(text) {
+  return /soundcloud\.com/i.test(text);
+}
+
+/**
+ * Instagram uchun cookie sozlamalari.
+ * Story'lar va yopiq postlar faqat tizimga kirgan holda ko'rinadi.
+ *
+ * .env da ikkita usuldan birini tanlash mumkin:
+ *   INSTAGRAM_COOKIES_FILE=C:\...\cookies.txt   (eng ishonchli)
+ *   COOKIES_FROM_BROWSER=firefox                (brauzerdan avtomatik)
+ */
+let cookieWarningShown = false;
+
+function cookieArgs(url) {
+  if (!isInstagramUrl(url)) return [];
+
+  const cookieFile = process.env.INSTAGRAM_COOKIES_FILE;
+  if (cookieFile && fs.existsSync(cookieFile)) {
+    return ["--cookies", cookieFile];
+  }
+
+  const browser = process.env.COOKIES_FROM_BROWSER;
+  if (browser) {
+    return ["--cookies-from-browser", browser];
+  }
+
+  if (!cookieWarningShown) {
+    cookieWarningShown = true;
+    console.warn(
+      "ℹ Instagram cookie sozlanmagan — story va yopiq postlar ishlamaydi.\n" +
+        "  .env da INSTAGRAM_COOKIES_FILE yoki COOKIES_FROM_BROWSER ni to'ldiring."
+    );
+  }
+  return [];
+}
+
+function hasCookiesConfigured() {
+  const cookieFile = process.env.INSTAGRAM_COOKIES_FILE;
+  return Boolean(
+    (cookieFile && fs.existsSync(cookieFile)) || process.env.COOKIES_FROM_BROWSER
+  );
 }
 
 /** Berilgan id bilan boshlanadigan yuklangan faylni topadi. */
@@ -130,6 +179,7 @@ async function runDownload(url, format, onProgress) {
     "--no-playlist",
     "--no-check-formats",
     "--no-write-thumbnail",
+    ...cookieArgs(url),
     ...aria2cArgs(),
     ...ffmpegLocationArgs(),
     // Instagram'ning yopiq postlari uchun cookie kerak bo'lsa, quyidagini yoqing:
@@ -185,6 +235,7 @@ async function downloadMedia(url, onProgress) {
     "--no-warnings",
     // Instagram karusel postlari bir nechta elementdan iborat bo'ladi
     instagram ? "--yes-playlist" : "--no-playlist",
+    ...cookieArgs(url),
     ...aria2cArgs(),
     ...ffmpegLocationArgs(),
   ];
@@ -213,6 +264,10 @@ async function downloadMedia(url, onProgress) {
       "--skip-download",
       "--convert-thumbnails",
       "jpg",
+      // Rasm postlarida "format yo'q" xatosi normal holat — to'xtab qolmaymiz
+      "--ignore-no-formats-error",
+      // Karuseldagi bitta element ishlamasa, qolganlari yuklanaversin
+      "--ignore-errors",
     ]);
   }
 
@@ -306,6 +361,7 @@ async function downloadAudioClip(url, seconds = 25) {
     "--no-playlist",
     "--no-warnings",
     "--no-progress",
+    ...cookieArgs(url),
     ...ffmpegLocationArgs(),
   ]);
 
@@ -327,6 +383,7 @@ async function searchOnce(searchSpec, source) {
     "--dump-json",
     "--no-warnings",
     "--no-progress",
+    ...(source === "soundcloud" ? soundcloudProxyArgs() : []),
   ]);
 
   const results = [];
@@ -382,7 +439,13 @@ async function searchCandidates(query, limit = 10) {
   const safeYoutube = youtube.filter((item) => !item.drmRisk);
   const riskyYoutube = youtube.filter((item) => item.drmRisk);
 
-  return [...safeYoutube, ...soundcloud, ...riskyYoutube].slice(0, limit);
+  // SoundCloud'ga doim joy qoldiramiz — aks holda YouTube natijalari limitni
+  // to'liq band qilib, ishonchli zaxira manba hech qachon sinalmay qoladi.
+  const youtubeBudget = Math.max(limit - soundcloud.length, 0);
+  return [...safeYoutube.slice(0, youtubeBudget), ...soundcloud, ...riskyYoutube].slice(
+    0,
+    limit
+  );
 }
 
 /** Aniq bir havoladan mp3 yuklaydi. */
@@ -408,6 +471,7 @@ async function downloadAudioByUrl(url) {
     "--no-progress",
     ...aria2cArgs(),
     ...ffmpegLocationArgs(),
+    ...(isSoundcloudUrl(url) ? soundcloudProxyArgs() : []),
   ]);
 
   const audioFile = findDownloadedFile(id, ".mp3");
@@ -418,50 +482,92 @@ async function downloadAudioByUrl(url) {
 }
 
 /**
- * YouTube'da matn (qo'shiq nomi) bo'yicha qidirib, birinchi natijadan mp3 yuklaydi.
+ * Nomzodlar ro'yxatidan birinchi muvaffaqiyatli yuklanadiganini topadi.
+ * Bitta natija ishlamasa (DRM, tarmoq, 403 yoki boshqa xato) — taslim
+ * bo'lmasdan ro'yxatdagi keyingisini sinaydi.
+ * @returns {Promise<{audioPath: string, item: object}>}
+ */
+async function downloadFirstAvailable(candidates) {
+  let lastError;
+  for (const candidate of candidates) {
+    try {
+      const audioPath = await downloadAudioByUrl(candidate.url);
+      return { audioPath, item: candidate };
+    } catch (e) {
+      lastError = e;
+      console.warn(
+        `⚠ "${candidate.title}" yuklanmadi (${e.message.slice(0, 80)}), keyingisi sinalmoqda...`
+      );
+    }
+  }
+  throw lastError;
+}
+
+/**
+ * YouTube'da matn (qo'shiq nomi) bo'yicha qidirib, mp3 yuklaydi.
+ * Eng mos natija ko'pincha rasmiy "Artist - Topic" auto-kanalida bo'ladi,
+ * bunday kanal videolari esa deyarli har doim DRM bilan himoyalangan —
+ * shuning uchun bir nechta nomzod (YouTube + SoundCloud) orasidan birinchi
+ * ishlaydiganini tanlaymiz.
  */
 async function searchAndDownloadAudio(query) {
-  const id = randomUUID();
-  const outputTemplate = path.join(DOWNLOADS_DIR, `${id}.%(ext)s`);
-
-  await runYtdlpWithFallback([
-    `ytsearch1:${query}`,
-    "-o",
-    outputTemplate,
-    "-x",
-    "--audio-format",
-    "mp3",
-    "--audio-quality",
-    "5",
-    "-N",
-    "8",
-    "--no-playlist",
-    "--no-warnings",
-    "--no-progress",
-    ...ffmpegLocationArgs(),
-  ]);
-
-  const audioFile = findDownloadedFile(id, ".mp3");
-  if (!audioFile) {
+  const candidates = await searchCandidates(query, 10);
+  if (!candidates.length) {
     throw new Error("Qo'shiq topilmadi.");
   }
-  return path.join(DOWNLOADS_DIR, audioFile);
+
+  const { audioPath } = await downloadFirstAvailable(candidates);
+  return audioPath;
 }
 
 function cleanupFile(filePath) {
   fs.unlink(filePath, () => {});
 }
 
+/**
+ * downloads/ papkasini diskdan tekshirib, belgilangan yoshdan katta fayllarni
+ * o'chiradi. Xotiradagi mediaCache'dan mustaqil ishlaydi — shuning uchun bot
+ * qayta ishga tushgandan keyin ham, yuklash yarim yo'lda uzilib qolgan
+ * bo'lak fayllar (masalan *.f251.webm, *.fdash-xxx.m4a) ham tozalanadi.
+ */
+function sweepOldDownloads(maxAgeMs = 30 * 60 * 1000) {
+  let files;
+  try {
+    files = fs.readdirSync(DOWNLOADS_DIR);
+  } catch {
+    return;
+  }
+
+  const now = Date.now();
+  for (const file of files) {
+    if (file === ".gitkeep") continue;
+    const filePath = path.join(DOWNLOADS_DIR, file);
+    try {
+      const stats = fs.statSync(filePath);
+      if (!stats.isFile()) continue;
+      if (now - stats.mtimeMs > maxAgeMs) {
+        fs.unlinkSync(filePath);
+      }
+    } catch {
+      /* fayl allaqachon o'chirilgan yoki band bo'lishi mumkin */
+    }
+  }
+}
+
 export {
   isUrl,
   isInstagramUrl,
+  isInstagramStoryUrl,
   isYoutubeUrl,
+  hasCookiesConfigured,
   downloadVideo,
   downloadMedia,
   downloadAudioClip,
   searchCandidates,
   downloadAudioByUrl,
+  downloadFirstAvailable,
   extractAudioFromVideo,
   searchAndDownloadAudio,
   cleanupFile,
+  sweepOldDownloads,
 };
