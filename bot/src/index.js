@@ -15,6 +15,7 @@ import {
   searchCandidates,
   downloadAudioByUrl,
   extractAudioFromVideo,
+  convertVideoToAudio,
   searchAndDownloadAudio,
   cleanupFile,
   sweepOldDownloads,
@@ -323,7 +324,8 @@ async function handleLink(ctx, url) {
         caption: "⚡ Tayyor (keshdan)",
         supports_streaming: true,
         ...Markup.inlineKeyboard([
-          Markup.button.callback("🎧 Musiqasini top", `musicurl:${urlKey}`),
+          [Markup.button.callback("🎧 Musiqasini top", `musicurl:${urlKey}`)],
+          [Markup.button.callback("🎵 Audio qilib olish", `audiourl:${urlKey}`)],
         ]),
       });
       return;
@@ -426,7 +428,8 @@ async function handleLink(ctx, url) {
         caption,
         supports_streaming: true,
         ...Markup.inlineKeyboard([
-          Markup.button.callback("🎧 Musiqasini top", `music:${key}`),
+          [Markup.button.callback("🎧 Musiqasini top", `music:${key}`)],
+          [Markup.button.callback("🎵 Audio qilib olish", `audio:${key}`)],
         ]),
       }
     );
@@ -483,6 +486,35 @@ bot.action(/^music:(.+)$/, async (ctx) => {
 });
 
 // ---------------------------------------------------------------------------
+// 2c. "Audio qilib olish" tugmasi bosilganda — videoning to'liq audiosini yuboramiz
+// ---------------------------------------------------------------------------
+bot.action(/^audio:(.+)$/, async (ctx) => {
+  const key = ctx.match[1];
+  const cached = mediaCache.get(key);
+
+  await ctx.answerCbQuery();
+
+  if (!cached || !fs.existsSync(cached.filePath)) {
+    return ctx.reply("⏱ Vaqt o'tib ketdi. Havolani qaytadan yuboring.");
+  }
+
+  const statusMsg = await ctx.reply("🎵 Audio ajratilmoqda...");
+  let audioPath;
+  try {
+    audioPath = await convertVideoToAudio(cached.filePath);
+    if (!checkFileSize(audioPath, ctx)) return;
+
+    await ctx.replyWithAudio({ source: audioPath, filename: "audio.mp3" });
+  } catch (e) {
+    await ctx.reply(toUserMessage(e, "audio ajratish"));
+    notifyAdmin(ctx.telegram, e, "audio ajratish");
+  } finally {
+    if (audioPath) cleanupFile(audioPath);
+    await safeDeleteMessage(ctx, statusMsg.message_id);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // 2b. Keshdan kelgan video uchun "Musiqasini top" — havoladan qisqa parcha olamiz
 // ---------------------------------------------------------------------------
 bot.action(/^musicurl:(.+)$/, async (ctx) => {
@@ -509,6 +541,35 @@ bot.action(/^musicurl:(.+)$/, async (ctx) => {
   } catch (e) {
     await ctx.reply(toUserMessage(e, "musiqa aniqlash"));
     notifyAdmin(ctx.telegram, e, "musiqa aniqlash");
+  } finally {
+    if (audioPath) cleanupFile(audioPath);
+    await safeDeleteMessage(ctx, statusMsg.message_id);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 2d. Keshdan kelgan video uchun "Audio qilib olish" — havoladan to'liq mp3 olamiz
+// ---------------------------------------------------------------------------
+bot.action(/^audiourl:(.+)$/, async (ctx) => {
+  const key = ctx.match[1];
+  const cached = urlCache.get(key);
+
+  await ctx.answerCbQuery();
+
+  if (!cached) {
+    return ctx.reply("⏱ Vaqt o'tib ketdi. Havolani qaytadan yuboring.");
+  }
+
+  const statusMsg = await ctx.reply("🎵 Audio yuklanmoqda...");
+  let audioPath;
+  try {
+    audioPath = await downloadAudioByUrl(cached.url);
+    if (!checkFileSize(audioPath, ctx)) return;
+
+    await ctx.replyWithAudio({ source: audioPath, filename: "audio.mp3" });
+  } catch (e) {
+    await ctx.reply(toUserMessage(e, "audio yuklash"));
+    notifyAdmin(ctx.telegram, e, "audio yuklash");
   } finally {
     if (audioPath) cleanupFile(audioPath);
     await safeDeleteMessage(ctx, statusMsg.message_id);

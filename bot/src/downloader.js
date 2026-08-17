@@ -338,6 +338,26 @@ async function extractAudioFromVideo(videoPath) {
 }
 
 /**
+ * Mahalliy video faylning TO'LIQ audiosini (boshidan oxirigacha) mp3 qilib
+ * ajratib oladi — foydalanuvchi videoni "audio qilib olish" so'raganda.
+ */
+async function convertVideoToAudio(videoPath) {
+  const outPath = path.join(DOWNLOADS_DIR, `${randomUUID()}.mp3`);
+  await runFfmpeg([
+    "-y",
+    "-i",
+    videoPath,
+    "-vn",
+    "-acodec",
+    "libmp3lame",
+    "-q:a",
+    "2",
+    outPath,
+  ]);
+  return outPath;
+}
+
+/**
  * Havoladan faqat qisqa audio parcha yuklaydi (musiqani tanish uchun).
  * To'liq videoni yuklamagani uchun ancha tez ishlaydi.
  */
@@ -567,6 +587,7 @@ export {
   downloadAudioByUrl,
   downloadFirstAvailable,
   extractAudioFromVideo,
+  convertVideoToAudio,
   searchAndDownloadAudio,
   cleanupFile,
   sweepOldDownloads,
