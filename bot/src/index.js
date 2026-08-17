@@ -24,6 +24,7 @@ import { recognizeAudio, findSongByText } from "./recognizer.js";
 import { getCachedFileId, setCachedFileId, cacheSize } from "./filecache.js";
 import { checkYtdlp, checkFfmpeg, getVideoMetadata } from "./ytdlp.js";
 import { toUserMessage, notifyAdmin } from "./errors.js";
+import { rememberUser, getAllUsers, userCount } from "./userstore.js";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) {
@@ -53,6 +54,12 @@ process.on("unhandledRejection", (err) => {
 });
 process.on("uncaughtException", (err) => {
   console.error("[ushlanmagan xato]", err?.message || err);
+});
+
+// /broadcast buyrug'i shu ro'yxatdagi hammaga xabar yuborish uchun ishlatadi
+bot.use((ctx, next) => {
+  if (ctx.from) rememberUser(ctx.from.id);
+  return next();
 });
 
 // ---------------------------------------------------------------------------
@@ -256,6 +263,50 @@ bot.help((ctx) =>
     "/start - botni ishga tushirish\n\nLink yuboring, ovoz/video yuboring yoki qo'shiq nomini yozing."
   )
 );
+
+// ---------------------------------------------------------------------------
+// Admin: barcha foydalanuvchilarga xabar yuborish
+// Ishlatilishi: yubormoqchi bo'lgan xabaringizga (matn/rasm/video — istalgan
+// turi) javob (reply) qilib /broadcast deb yozing.
+// ---------------------------------------------------------------------------
+function isAdmin(ctx) {
+  const adminId = process.env.ADMIN_CHAT_ID;
+  return Boolean(adminId) && String(ctx.from?.id) === String(adminId);
+}
+
+bot.command("broadcast", async (ctx) => {
+  if (!isAdmin(ctx)) return; // oddiy foydalanuvchilarga sezilmasin
+
+  const replied = ctx.message.reply_to_message;
+  if (!replied) {
+    return ctx.reply(
+      "Yubormoqchi bo'lgan xabaringizga javob (reply) qilib /broadcast deb yozing."
+    );
+  }
+
+  const ids = getAllUsers();
+  const statusMsg = await ctx.reply(`📢 ${ids.length} ta foydalanuvchiga yuborilmoqda...`);
+
+  let sent = 0;
+  let failed = 0;
+  for (const id of ids) {
+    try {
+      await ctx.telegram.copyMessage(id, ctx.chat.id, replied.message_id);
+      sent++;
+    } catch {
+      failed++;
+    }
+    // Telegram'ning flood-limitiga tushmaslik uchun har xabardan keyin ozgina kutamiz
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  }
+
+  await ctx.telegram.editMessageText(
+    ctx.chat.id,
+    statusMsg.message_id,
+    undefined,
+    `✅ Yuborildi: ${sent} ta\n❌ Yetib bormadi: ${failed} ta`
+  );
+});
 
 // ---------------------------------------------------------------------------
 // 1. Link yuborilganda: faqat videoni yuklaymiz (tez!)
@@ -567,7 +618,17 @@ bot.action(/^pick:([^:]+):(\d+)$/, async (ctx) => {
   const statusMsg = await ctx.reply(`⏳ Yuklanmoqda: ${item.title}`);
   let audioPath;
   try {
-    audioPath = await downloadAudioByUrl(item.url);
+    try {
+      audioPath = await downloadAudioByUrl(item.url);
+    } catch (e) {
+      // Aynan shu havola ishlamasa (masalan DRM) — ro'yxatdagi BOSHQA
+      // qo'shiqqa o'tmaymiz, faqat xuddi shu qo'shiqning boshqa
+      // yuklamasini (nomi/ijrochisi bo'yicha) qidirib topamiz.
+      console.warn(
+        `⚠ Tanlangan havola ishlamadi (${e.message.slice(0, 80)}), xuddi shu qo'shiqning boshqa manbasi sinalmoqda...`
+      );
+      audioPath = await searchAndDownloadAudio(`${artist} ${title}`);
+    }
     if (!checkFileSize(audioPath, ctx)) return;
 
     const sent = await sendAudio(ctx, audioPath, {
@@ -658,6 +719,14 @@ async function preflight() {
 
   if (cacheSize() > 0) {
     console.log(`✔ Keshda ${cacheSize()} ta tayyor video bor`);
+  }
+
+  console.log(`✔ Ro'yxatda ${userCount()} ta foydalanuvchi bor (/broadcast uchun)`);
+
+  if (!process.env.ADMIN_CHAT_ID) {
+    console.warn(
+      "⚠ ADMIN_CHAT_ID sozlanmagan — /broadcast buyrug'i hech kim uchun ishlamaydi."
+    );
   }
 }
 
